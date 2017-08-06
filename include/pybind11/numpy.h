@@ -166,7 +166,8 @@ struct npy_api {
     PyObject *(*PyArray_Squeeze_)(PyObject *);
     int (*PyArray_SetBaseObject_)(PyObject *, PyObject *);
     PyObject* (*PyArray_Resize_)(PyObject*, PyArray_Dims*, int, int);
-    PyObject* (*PyArray_Newshape_)(PyObject*, PyArray_Dims*, int);
+  PyObject* (*PyArray_Newshape_)(PyObject*, PyArray_Dims*, int);
+    PyObject* (*PyArray_View_)(PyObject*, PyObject*, PyObject*);
 
 private:
     enum functions {
@@ -187,7 +188,8 @@ private:
         API_PyArray_EquivTypes = 182,
         API_PyArray_GetArrayParamsFromObject = 278,
         API_PyArray_Squeeze = 136,
-        API_PyArray_SetBaseObject = 282
+        API_PyArray_SetBaseObject = 282,
+        API_PyArray_View = 137
     };
 
     static npy_api lookup() {
@@ -220,6 +222,7 @@ private:
         DECL_NPY_API(PyArray_GetArrayParamsFromObject);
         DECL_NPY_API(PyArray_Squeeze);
         DECL_NPY_API(PyArray_SetBaseObject);
+        DECL_NPY_API(PyArray_View);
 
 #undef DECL_NPY_API
         return api;
@@ -747,8 +750,15 @@ public:
         if (!new_array) throw error_already_set();
         if (isinstance<array>(new_array)) { *this = std::move(new_array); }
     }
-    
 
+    // Create a view of an array in a different data type
+    // This function may fundamentally reinterpret the data in the array
+    // only supports the `dtype` argument, not the `type` argument
+    array view(std::string dtype) {
+        auto& api = detail::npy_api::get();
+        return reinterpret_steal<array>(api.PyArray_View_(m_ptr, dtype::from_args(pybind11::str(dtype)).release().ptr(), NULL));
+    }
+  
     /// Ensure that the argument is a NumPy array
     /// In case of an error, nullptr is returned and the Python error is cleared.
     static array ensure(handle h, int ExtraFlags = 0) {

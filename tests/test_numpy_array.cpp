@@ -292,7 +292,10 @@ TEST_SUBMODULE(numpy_array, sm) {
         std::fill(a.mutable_data(), a.mutable_data() + a.size(), 42.);
         return a;
     });
-
+    
+    sm.def("array_view1", [](py::array_t<unsigned char> a, std::string dtype) {
+        return a.view(dtype);
+    
     sm.def("array_reshape1", [](py::array_t<double> a, size_t N) {
         a.reshape({N, N, N});
         return a;
