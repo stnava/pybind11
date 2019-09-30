@@ -10,6 +10,7 @@
 #include "pybind11_tests.h"
 #include "constructor_stats.h"
 #include <pybind11/functional.h>
+#include <thread>
 
 /* This is an example class that we'll want to be able to extend from Python */
 class ExampleVirt  {
@@ -17,7 +18,7 @@ public:
     ExampleVirt(int state) : state(state) { print_created(this, state); }
     ExampleVirt(const ExampleVirt &e) : state(e.state) { print_copy_created(this); }
     ExampleVirt(ExampleVirt &&e) : state(e.state) { print_move_created(this); e.state = 0; }
-    ~ExampleVirt() { print_destroyed(this); }
+    virtual ~ExampleVirt() { print_destroyed(this); }
 
     virtual int run(int value) {
         py::print("Original implementation of "
@@ -128,6 +129,7 @@ private:
 
 class NCVirt {
 public:
+    virtual ~NCVirt() { }
     virtual NonCopyable get_noncopyable(int a, int b) { return NonCopyable(a, b); }
     virtual Movable get_movable(int a, int b) = 0;
 
@@ -148,6 +150,7 @@ class NCVirtTrampoline : public NCVirt {
 struct Base {
     /* for some reason MSVC2015 can't compile this if the function is pure virtual */
     virtual std::string dispatch() const { return {}; };
+    virtual ~Base() = default;
 };
 
 struct DispatchIssue : Base {
@@ -155,6 +158,28 @@ struct DispatchIssue : Base {
         PYBIND11_OVERLOAD_PURE(std::string, Base, dispatch, /* no arguments */);
     }
 };
+
+static void test_gil() {
+    {
+        py::gil_scoped_acquire lock;
+        py::print("1st lock acquired");
+
+    }
+
+    {
+        py::gil_scoped_acquire lock;
+        py::print("2nd lock acquired");
+    }
+
+}
+
+static void test_gil_from_thread() {
+    py::gil_scoped_release release;
+
+    std::thread t(test_gil);
+    t.join();
+}
+
 
 // Forward declaration (so that we can put the main tests here; the inherited virtual approaches are
 // rather long).
@@ -206,7 +231,9 @@ TEST_SUBMODULE(virtual_functions, m) {
 
         void f() override {
             py::print("PyA.f()");
-            PYBIND11_OVERLOAD(void, A, f);
+            // This convolution just gives a `void`, but tests that PYBIND11_TYPE() works to protect
+            // a type containing a ,
+            PYBIND11_OVERLOAD(PYBIND11_TYPE(typename std::enable_if<true, void>::type), A, f);
         }
     };
 
@@ -234,6 +261,7 @@ TEST_SUBMODULE(virtual_functions, m) {
 
     py::class_<A2, PyA2>(m, "A2")
         .def(py::init_alias<>())
+        .def(py::init([](int) { return new PyA2(); }))
         .def("f", &A2::f);
 
     m.def("call_f", [](A2 *a2) { a2->f(); });
@@ -247,7 +275,7 @@ TEST_SUBMODULE(virtual_functions, m) {
     m.def("dispatch_issue_go", [](const Base * b) { return b->dispatch(); });
 
     // test_override_ref
-    // #392/397: overridding reference-returning functions
+    // #392/397: overriding reference-returning functions
     class OverrideTest {
     public:
         struct A { std::string value = "hi"; };
@@ -258,6 +286,7 @@ TEST_SUBMODULE(virtual_functions, m) {
         virtual std::string &str_ref() { return v; }
         virtual A A_value() { return a; }
         virtual A &A_ref() { return a; }
+        virtual ~OverrideTest() = default;
     };
 
     class PyOverrideTest : public OverrideTest {
@@ -310,6 +339,7 @@ public: \
         return say_something(1) + " " + std::to_string(unlucky_number()); \
     }
 A_METHODS
+    virtual ~A_Repeat() = default;
 };
 class B_Repeat : public A_Repeat {
 #define B_METHODS \
@@ -334,7 +364,7 @@ D_METHODS
 };
 
 // Base classes for templated inheritance trampolines.  Identical to the repeat-everything version:
-class A_Tpl { A_METHODS };
+class A_Tpl { A_METHODS; virtual ~A_Tpl() = default; };
 class B_Tpl : public A_Tpl { B_METHODS };
 class C_Tpl : public B_Tpl { C_METHODS };
 class D_Tpl : public C_Tpl { D_METHODS };
@@ -410,7 +440,6 @@ public:
 };
 */
 
-
 void initialize_inherited_virtuals(py::module &m) {
     // test_inherited_virtuals
 
@@ -443,5 +472,8 @@ void initialize_inherited_virtuals(py::module &m) {
     py::class_<D_Tpl, C_Tpl, PyB_Tpl<D_Tpl>>(m, "D_Tpl")
         .def(py::init<>());
 
-};
 
+    // Fix issue #1454 (crash when acquiring/releasing GIL on another thread in Python 2.7)
+    m.def("test_gil", &test_gil);
+    m.def("test_gil_from_thread", &test_gil_from_thread);
+};

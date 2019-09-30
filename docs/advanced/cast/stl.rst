@@ -5,7 +5,7 @@ Automatic conversion
 ====================
 
 When including the additional header file :file:`pybind11/stl.h`, conversions
-between ``std::vector<>``/``std::list<>``/``std::array<>``,
+between ``std::vector<>``/``std::deque<>``/``std::list<>``/``std::array<>``,
 ``std::set<>``/``std::unordered_set<>``, and
 ``std::map<>``/``std::unordered_map<>`` and the Python ``list``, ``set`` and
 ``dict`` data structures are automatically enabled. The types ``std::pair<>``
@@ -25,6 +25,8 @@ next sections for more details and alternative approaches that avoid this.
 
     The file :file:`tests/test_stl.cpp` contains a complete
     example that demonstrates how to pass STL data types in more detail.
+
+.. _cpp17_container_casters:
 
 C++17 library containers
 ========================
@@ -60,9 +62,8 @@ for custom variant types:
         template <>
         struct visit_helper<boost::variant> {
             template <typename... Args>
-            static auto call(Args &&...args)
-                -> decltype(boost::apply_visitor(std::forward<Args>(args)...)) {
-                return boost::apply_visitor(std::forward<Args>(args)...);
+            static auto call(Args &&...args) -> decltype(boost::apply_visitor(args...)) {
+                return boost::apply_visitor(args...);
             }
         };
     }} // namespace pybind11::detail
@@ -70,6 +71,13 @@ for custom variant types:
 The ``visit_helper`` specialization is not required if your ``name::variant`` provides
 a ``name::visit()`` function. For any other function name, the specialization must be
 included to tell pybind11 how to visit the variant.
+
+.. note::
+
+    pybind11 only supports the modern implementation of ``boost::variant``
+    which makes use of variadic templates. This requires Boost 1.56 or newer.
+    Additionally, on Windows, MSVC 2017 is required because ``boost::variant``
+    falls back to the old non-variadic implementation on MSVC 2015.
 
 .. _opaque:
 
@@ -166,9 +174,6 @@ in Python, and to define a set of available operations, e.g.:
            return py::make_iterator(v.begin(), v.end());
         }, py::keep_alive<0, 1>()) /* Keep vector alive while iterator is used */
         // ....
-
-Please take a look at the :ref:`macro_notes` before using the
-``PYBIND11_MAKE_OPAQUE`` macro.
 
 .. seealso::
 

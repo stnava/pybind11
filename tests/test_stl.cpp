@@ -8,8 +8,35 @@
 */
 
 #include "pybind11_tests.h"
+#include "constructor_stats.h"
 #include <pybind11/stl.h>
 
+#include <vector>
+#include <string>
+
+// Test with `std::variant` in C++17 mode, or with `boost::variant` in C++11/14
+#if PYBIND11_HAS_VARIANT
+using std::variant;
+#elif defined(PYBIND11_TEST_BOOST) && (!defined(_MSC_VER) || _MSC_VER >= 1910)
+#  include <boost/variant.hpp>
+#  define PYBIND11_HAS_VARIANT 1
+using boost::variant;
+
+namespace pybind11 { namespace detail {
+template <typename... Ts>
+struct type_caster<boost::variant<Ts...>> : variant_caster<boost::variant<Ts...>> {};
+
+template <>
+struct visit_helper<boost::variant> {
+    template <typename... Args>
+    static auto call(Args &&...args) -> decltype(boost::apply_visitor(args...)) {
+        return boost::apply_visitor(args...);
+    }
+};
+}} // namespace pybind11::detail
+#endif
+
+PYBIND11_MAKE_OPAQUE(std::vector<std::string, std::allocator<std::string>>);
 
 /// Issue #528: templated constructor
 struct TplCtorClass {
@@ -27,9 +54,18 @@ TEST_SUBMODULE(stl, m) {
     // test_vector
     m.def("cast_vector", []() { return std::vector<int>{1}; });
     m.def("load_vector", [](const std::vector<int> &v) { return v.at(0) == 1 && v.at(1) == 2; });
+    // `std::vector<bool>` is special because it returns proxy objects instead of references
+    m.def("cast_bool_vector", []() { return std::vector<bool>{true, false}; });
+    m.def("load_bool_vector", [](const std::vector<bool> &v) {
+        return v.at(0) == true && v.at(1) == false;
+    });
     // Unnumbered regression (caused by #936): pointers to stl containers aren't castable
     static std::vector<RValueCaster> lvv{2};
     m.def("cast_ptr_vector", []() { return &lvv; });
+
+    // test_deque
+    m.def("cast_deque", []() { return std::deque<int>{1}; });
+    m.def("load_deque", [](const std::deque<int> &v) { return v.at(0) == 1 && v.at(1) == 2; });
 
     // test_array
     m.def("cast_array", []() { return std::array<int, 2> {{1 , 2}}; });
@@ -162,22 +198,27 @@ TEST_SUBMODULE(stl, m) {
 #endif
 
 #ifdef PYBIND11_HAS_VARIANT
+    static_assert(std::is_same<py::detail::variant_caster_visitor::result_type, py::handle>::value,
+                  "visitor::result_type is required by boost::variant in C++11 mode");
+
     struct visitor {
-        const char *operator()(int) { return "int"; }
-        const char *operator()(std::string) { return "std::string"; }
-        const char *operator()(double) { return "double"; }
-        const char *operator()(std::nullptr_t) { return "std::nullptr_t"; }
+        using result_type = const char *;
+
+        result_type operator()(int) { return "int"; }
+        result_type operator()(std::string) { return "std::string"; }
+        result_type operator()(double) { return "double"; }
+        result_type operator()(std::nullptr_t) { return "std::nullptr_t"; }
     };
 
     // test_variant
-    m.def("load_variant", [](std::variant<int, std::string, double, std::nullptr_t> v) {
-        return std::visit(visitor(), v);
+    m.def("load_variant", [](variant<int, std::string, double, std::nullptr_t> v) {
+        return py::detail::visit_helper<variant>::call(visitor(), v);
     });
-    m.def("load_variant_2pass", [](std::variant<double, int> v) {
-        return std::visit(visitor(), v);
+    m.def("load_variant_2pass", [](variant<double, int> v) {
+        return py::detail::visit_helper<variant>::call(visitor(), v);
     });
     m.def("cast_variant", []() {
-        using V = std::variant<int, std::string>;
+        using V = variant<int, std::string>;
         return py::make_tuple(V(5), V("Hello"));
     });
 #endif
@@ -204,4 +245,40 @@ TEST_SUBMODULE(stl, m) {
 
     // test_stl_pass_by_pointer
     m.def("stl_pass_by_pointer", [](std::vector<int>* v) { return *v; }, "v"_a=nullptr);
+
+    // #1258: pybind11/stl.h converts string to vector<string>
+    m.def("func_with_string_or_vector_string_arg_overload", [](std::vector<std::string>) { return 1; });
+    m.def("func_with_string_or_vector_string_arg_overload", [](std::list<std::string>) { return 2; });
+    m.def("func_with_string_or_vector_string_arg_overload", [](std::string) { return 3; });
+
+    class Placeholder {
+    public:
+        Placeholder() { print_created(this); }
+        Placeholder(const Placeholder &) = delete;
+        ~Placeholder() { print_destroyed(this); }
+    };
+    py::class_<Placeholder>(m, "Placeholder");
+
+    /// test_stl_vector_ownership
+    m.def("test_stl_ownership",
+          []() {
+              std::vector<Placeholder *> result;
+              result.push_back(new Placeholder());
+              return result;
+          },
+          py::return_value_policy::take_ownership);
+
+    m.def("array_cast_sequence", [](std::array<int, 3> x) { return x; });
+
+    /// test_issue_1561
+    struct Issue1561Inner { std::string data; };
+    struct Issue1561Outer { std::vector<Issue1561Inner> list; };
+
+    py::class_<Issue1561Inner>(m, "Issue1561Inner")
+        .def(py::init<std::string>())
+        .def_readwrite("data", &Issue1561Inner::data);
+
+    py::class_<Issue1561Outer>(m, "Issue1561Outer")
+        .def(py::init<>())
+        .def_readwrite("list", &Issue1561Outer::list);
 }
